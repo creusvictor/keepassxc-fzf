@@ -1,0 +1,24 @@
+# KeePass databases
+*.kdbx
+
+# KeePass key files
+*.key
+*.keyx
+
+# Backup files
+*.bak
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+test_db.kdbx
+test.key

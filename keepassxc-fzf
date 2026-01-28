@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Global variables
+DATABASE=""
+PASSWORD=""
+KEYFILE=""
+
+# Function to display usage
+show_help() {
+    cat << EOF
+keepassxc-fzf - Terminal interface for KeePassXC
+
+Usage: keepassxc-fzf [OPTIONS] [database.kdbx]
+
+Options:
+    -h, --help          Show this help
+    -k, --keyfile FILE  Use keyfile
+
+Environment variables:
+    KPDB    Path to KeePass database
+    KPPW    Database password
+    KPKF    Path to keyfile
+
+Examples:
+    keepassxc-fzf my_database.kdbx
+    keepassxc-fzf -k my_key.key my_database.kdbx
+
+    # Using environment variables
+    export KPDB="\$HOME/passwords.kdbx"
+    export KPKF="\$HOME/passwords.key"
+    keepassxc-fzf
+EOF
+}
+
+# Function to print colored messages
+print_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+}
+
+print_success() {
+    echo -e "${GREEN}$1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}$1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+# Function to check dependencies
+check_dependencies() {
+    local missing_deps=()
+
+    if ! command -v keepassxc-cli &> /dev/null; then
+        missing_deps+=("keepassxc-cli")
+    fi
+
+    if ! command -v fzf &> /dev/null; then
+        missing_deps+=("fzf")
+    fi
+
+    # Check for clipboard utility
+    if ! command -v xclip &> /dev/null && ! command -v wl-copy &> /dev/null && ! command -v pbcopy &> /dev/null; then
+        print_warning "No clipboard utility found (xclip, wl-copy, or pbcopy)"
+        print_warning "Copy to clipboard function will not be available"
+    fi
+
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        print_error "Missing dependencies: ${missing_deps[*]}"
+        echo "Please install the required dependencies:"
+        for dep in "${missing_deps[@]}"; do
+            echo "  - $dep"
+        done
+        exit 1
+    fi
+}
+
+# Function to copy to clipboard
+copy_to_clipboard() {
+    local text="$1"
+    local duration="${2:-10}"
+
+    if command -v xclip &> /dev/null; then
+        echo -n "$text" | xclip -selection clipboard
+    elif command -v wl-copy &> /dev/null; then
+        echo -n "$text" | wl-copy
+    elif command -v pbcopy &> /dev/null; then
+        echo -n "$text" | pbcopy
+    else
+        print_error "No clipboard utility available"
+        return 1
+    fi
+
+    print_success "Copied to clipboard (will clear in ${duration}s)"
+
+    # Clear clipboard after duration
+    (sleep "$duration" && echo -n "" | copy_to_clipboard_raw 2>/dev/null) &
+}
+
+copy_to_clipboard_raw() {
+    if command -v xclip &> /dev/null; then
+        xclip -selection clipboard
+    elif command -v wl-copy &> /dev/null; then
+        wl-copy
+    elif command -v pbcopy &> /dev/null; then
+        pbcopy
+    fi
+}
+
+# Function to get password securely
+get_password() {
+    local prompt="${1:-Password}"
+    local password
+
+    echo -n "$prompt: " >&2
+    read -s password
+    echo >&2
+    echo "$password"
+}
+
+# Function to test database access
+test_database_access() {
+    local cmd_args=("keepassxc-cli" "ls")
+
+    if [ -n "$KEYFILE" ]; then
+        cmd_args+=("-k" "$KEYFILE")
+    fi
+
+    cmd_args+=("$DATABASE")
+
+    if echo "$PASSWORD" | "${cmd_args[@]}" &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to list all entries with their paths
+list_entries() {
+    local cmd_args=("keepassxc-cli" "ls" "-R" "-f")
+
+    if [ -n "$KEYFILE" ]; then
+        cmd_args+=("-k" "$KEYFILE")
+    fi
+
+    cmd_args+=("$DATABASE")
+
+    echo "$PASSWORD" | "${cmd_args[@]}" 2>/dev/null | grep -v "^/$" | sed 's|^/||'
+}
+
+# Function to get entry details
+get_entry_show() {
+    local entry="$1"
+    local cmd_args=("keepassxc-cli" "show" "-s")
+
+    if [ -n "$KEYFILE" ]; then
+        cmd_args+=("-k" "$KEYFILE")
+    fi
+
+    cmd_args+=("$DATABASE" "$entry")
+
+    echo "$PASSWORD" | "${cmd_args[@]}" 2>/dev/null
+}
+
+# Function to get password for an entry
+get_entry_password() {
+    local entry="$1"
+    local cmd_args=("keepassxc-cli" "show" "-s" "-a" "Password")
+
+    if [ -n "$KEYFILE" ]; then
+        cmd_args+=("-k" "$KEYFILE")
+    fi
+
+    cmd_args+=("$DATABASE" "$entry")
+
+    echo "$PASSWORD" | "${cmd_args[@]}" 2>/dev/null
+}
+
+# Function to get a specific attribute
+get_entry_attribute() {
+    local entry="$1"
+    local attribute="$2"
+    local cmd_args=("keepassxc-cli" "show" "-s" "-a" "$attribute")
+
+    if [ -n "$KEYFILE" ]; then
+        cmd_args+=("-k" "$KEYFILE")
+    fi
+
+    cmd_args+=("$DATABASE" "$entry")
+
+    echo "$PASSWORD" | "${cmd_args[@]}" 2>/dev/null
+}
+
+# Function to select and manage entry
+select_entry() {
+    # Export variables for preview subshell
+    export KPDB="$DATABASE"
+    export KPPW="$PASSWORD"
+    export KPKF="$KEYFILE"
+
+    local entries
+    entries=$(list_entries)
+
+    if [ -z "$entries" ]; then
+        print_error "No entries found in the database"
+        return
+    fi
+
+    echo "$entries" | fzf \
+        --height=80% \
+        --border \
+        --prompt="Search entry: " \
+        --preview="\"$0\" --preview {}" \
+        --preview-window=right:50%:wrap \
+        --header="^p:pass | ^u:user | ^l:url | ^n:notes | Alt-s:show pass | Enter:copy+exit" \
+        --bind "ctrl-p:execute-silent(\"$0\" --copy password {})" \
+        --bind "ctrl-u:execute-silent(\"$0\" --copy username {})" \
+        --bind "ctrl-l:execute-silent(\"$0\" --copy url {})" \
+        --bind "ctrl-n:execute-silent(\"$0\" --copy notes {})" \
+        --bind "alt-s:execute(\"$0\" --show-password {})" \
+        --bind "enter:execute-silent(\"$0\" --copy password {})+abort"
+}
+
+
+# Handle copy mode (called by fzf keybindings)
+handle_copy() {
+    local attr="$1"
+    local entry="$2"
+    local duration=10
+
+    DATABASE="$KPDB"
+    PASSWORD="$KPPW"
+    KEYFILE="${KPKF:-}"
+
+    case "$attr" in
+        password)
+            local value
+            value=$(get_entry_password "$entry")
+            if [ -n "$value" ]; then
+                copy_to_clipboard "$value" 10
+            fi
+            ;;
+        username)
+            local value
+            value=$(get_entry_attribute "$entry" "UserName")
+            if [ -n "$value" ]; then
+                copy_to_clipboard "$value" 30
+            fi
+            ;;
+        url)
+            local value
+            value=$(get_entry_attribute "$entry" "URL")
+            if [ -n "$value" ]; then
+                copy_to_clipboard "$value" 30
+            fi
+            ;;
+        notes)
+            local value
+            value=$(get_entry_attribute "$entry" "Notes")
+            if [ -n "$value" ]; then
+                copy_to_clipboard "$value" 30
+            fi
+            ;;
+    esac
+}
+
+# Handle preview mode (called by fzf)
+handle_preview() {
+    if [ "${1:-}" = "--preview" ]; then
+        local entry="${2:-}"
+        local show_pass="${3:-false}"
+        DATABASE="$KPDB"
+        PASSWORD="$KPPW"
+        KEYFILE="${KPKF:-}"
+
+        if [ -z "$entry" ]; then
+            echo "No entry selected"
+            exit 0
+        fi
+
+        local output
+        output=$(get_entry_show "$entry") || { echo "Error loading entry"; exit 0; }
+
+        if [ "$show_pass" = "true" ]; then
+            echo "$output"
+        else
+            # Hide password with asterisks
+            echo "$output" | sed 's/^\(Password: \).*$/\1*****/'
+        fi
+        exit 0
+    fi
+}
+
+# Handle show password mode (called by fzf)
+handle_show_password() {
+    local entry="$1"
+    DATABASE="$KPDB"
+    PASSWORD="$KPPW"
+    KEYFILE="${KPKF:-}"
+
+    local pass
+    pass=$(get_entry_password "$entry")
+    if [ -n "$pass" ]; then
+        echo -e "\n${YELLOW}Password: $pass${NC}\n"
+        echo "Press Enter to continue..."
+        read -r
+    fi
+}
+
+# Parse arguments
+parse_args() {
+    # First, load from environment variables if set
+    if [ -n "${KPDB:-}" ]; then
+        DATABASE="$KPDB"
+    fi
+    if [ -n "${KPPW:-}" ]; then
+        PASSWORD="$KPPW"
+    fi
+    if [ -n "${KPKF:-}" ]; then
+        KEYFILE="$KPKF"
+    fi
+
+    # Then, parse command line arguments (override env vars)
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -k|--keyfile)
+                KEYFILE="$2"
+                shift 2
+                ;;
+            *)
+                DATABASE="$1"
+                shift
+                ;;
+        esac
+    done
+}
+
+# Main function
+main() {
+    check_dependencies
+
+    parse_args "$@"
+
+    # Check if database is provided
+    if [ -z "$DATABASE" ]; then
+        print_error "No database specified"
+        echo
+        show_help
+        exit 1
+    fi
+
+    # Check if database exists
+    if [ ! -f "$DATABASE" ]; then
+        print_error "Database '$DATABASE' does not exist"
+        exit 1
+    fi
+
+    # Check if keyfile exists
+    if [ -n "$KEYFILE" ] && [ ! -f "$KEYFILE" ]; then
+        print_error "Keyfile '$KEYFILE' does not exist"
+        exit 1
+    fi
+
+    # Get password (if not already set via env var)
+    if [ -z "$PASSWORD" ]; then
+        PASSWORD=$(get_password "Database password")
+    fi
+
+    # Test database access
+    print_info "Verifying database access..."
+    if ! test_database_access; then
+        print_error "Could not access the database. Verify your password."
+        exit 1
+    fi
+
+    print_success "Database opened successfully"
+    sleep 1
+
+    # Start entry selector
+    select_entry
+}
+
+# Run main function if script is executed (not sourced)
+if [ "${BASH_SOURCE[0]}" -eq "$0" ] 2>/dev/null || [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    # Check if this is a preview call from fzf
+    handle_preview "$@"
+
+    # Check if this is a show-password call from fzf
+    if [ "${1:-}" = "--show-password" ]; then
+        handle_show_password "${2:-}"
+        exit 0
+    fi
+
+    # Check if this is a copy call from fzf
+    if [ "${1:-}" = "--copy" ]; then
+        handle_copy "${2:-}" "${3:-}"
+        exit 0
+    fi
+
+    # Otherwise run main
+    main "$@"
+fi
