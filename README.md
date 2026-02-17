@@ -29,6 +29,16 @@ Interactive terminal interface for managing KeePass databases using `keepassxc-c
 
 ## Installation
 
+### Quick install (recommended)
+
+```bash
+# Install to /usr/local/bin (requires sudo)
+curl -fsSL https://raw.githubusercontent.com/creusvictor/keepassxc-fzf/main/install.sh | sudo bash
+
+# Or install to ~/.local/bin (no sudo required)
+curl -fsSL https://raw.githubusercontent.com/creusvictor/keepassxc-fzf/main/install.sh | PREFIX=~/.local bash
+```
+
 ### Dependencies
 
 ```bash
@@ -45,7 +55,7 @@ sudo dnf install keepassxc fzf xclip
 brew install keepassxc fzf
 ```
 
-### Install keepassxc-fzf
+### Manual install (from source)
 
 ```bash
 git clone https://github.com/creusvictor/keepassxc-fzf.git
