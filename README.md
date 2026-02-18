@@ -2,6 +2,8 @@
 
 Interactive terminal interface for managing KeePass databases using `keepassxc-cli` and `fzf`.
 
+![Demo](assets/demo.gif)
+
 ## Features
 
 - Interactive entry search with fuzzy finder (fzf)
@@ -88,6 +90,14 @@ Environment variables:
     KPDB    Path to KeePass database
     KPPW    Database password (not recommended)
     KPKF    Path to keyfile
+
+Precedence (highest to lowest):
+    1. CLI arguments (-k, database path)
+    2. Environment variables (KPDB, KPPW, KPKF)
+
+Note: KPPW and KPKF are only inherited from the environment when the
+database also comes from KPDB. If you pass a database path on the CLI,
+those env vars are ignored to avoid using credentials from a different database.
 ```
 
 ### Examples
