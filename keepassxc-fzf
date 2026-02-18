@@ -13,6 +13,30 @@ NC='\033[0m' # No Color
 DATABASE=""
 PASSWORD=""
 KEYFILE=""
+KPPW_FILE="${KPPW_FILE:-}"  # Temporary file used to pass the password to fzf subprocesses
+
+# Create a secure temporary file to hold the password.
+# Only the current user can read it (chmod 600).
+# A trap ensures it is deleted on exit.
+setup_password_file() {
+    KPPW_FILE=$(mktemp)
+    chmod 600 "$KPPW_FILE"
+    trap 'rm -f "$KPPW_FILE"' EXIT INT TERM
+}
+
+# Write the password to the temporary file.
+write_password_file() {
+    printf '%s' "$PASSWORD" > "$KPPW_FILE"
+}
+
+# Read the password back from the temporary file (used by fzf subprocesses).
+read_password_file() {
+    if [ -z "$KPPW_FILE" ] || [ ! -f "$KPPW_FILE" ]; then
+        echo "Error: password file not found (KPPW_FILE='$KPPW_FILE')" >&2
+        exit 1
+    fi
+    cat "$KPPW_FILE"
+}
 
 # Function to display usage
 show_help() {
@@ -27,7 +51,6 @@ Options:
 
 Environment variables:
     KPDB    Path to KeePass database
-    KPPW    Database password
     KPKF    Path to keyfile
 
 Examples:
@@ -204,9 +227,12 @@ get_entry_attribute() {
 
 # Function to select and manage entry
 select_entry() {
-    # Export variables for preview subshell
+    # Export variables for fzf subprocesses.
+    # The password is NOT exported directly; instead we export the path to a
+    # chmod-600 temporary file that holds it, so it is not visible in
+    # /proc/<pid>/environ of any other process.
     export KPDB="$DATABASE"
-    export KPPW="$PASSWORD"
+    export KPPW_FILE="$KPPW_FILE"
     export KPKF="$KEYFILE"
 
     local entries
@@ -221,15 +247,15 @@ select_entry() {
         --height=80% \
         --border \
         --prompt="Search entry: " \
-        --preview="\"$0\" --preview {}" \
+        --preview="KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --preview {}" \
         --preview-window=right:50%:wrap \
         --header="^p:pass | ^u:user | ^l:url | ^n:notes | Alt-s:show pass | Enter:copy+exit" \
-        --bind "ctrl-p:execute-silent(\"$0\" --copy password {})" \
-        --bind "ctrl-u:execute-silent(\"$0\" --copy username {})" \
-        --bind "ctrl-l:execute-silent(\"$0\" --copy url {})" \
-        --bind "ctrl-n:execute-silent(\"$0\" --copy notes {})" \
-        --bind "alt-s:execute(\"$0\" --show-password {})" \
-        --bind "enter:execute-silent(\"$0\" --copy password {})+abort"
+        --bind "ctrl-p:execute-silent(KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --copy password {})" \
+        --bind "ctrl-u:execute-silent(KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --copy username {})" \
+        --bind "ctrl-l:execute-silent(KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --copy url {})" \
+        --bind "ctrl-n:execute-silent(KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --copy notes {})" \
+        --bind "alt-s:execute(KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --show-password {})" \
+        --bind "enter:execute-silent(KPPW_FILE=\"$KPPW_FILE\" KPDB=\"$DATABASE\" KPKF=\"$KEYFILE\" \"$0\" --copy password {})+abort"
 }
 
 
@@ -240,7 +266,7 @@ handle_copy() {
     local duration=10
 
     DATABASE="$KPDB"
-    PASSWORD="$KPPW"
+    PASSWORD=$(read_password_file)
     KEYFILE="${KPKF:-}"
 
     case "$attr" in
@@ -281,7 +307,7 @@ handle_preview() {
         local entry="${2:-}"
         local show_pass="${3:-false}"
         DATABASE="$KPDB"
-        PASSWORD="$KPPW"
+        PASSWORD=$(read_password_file)
         KEYFILE="${KPKF:-}"
 
         if [ -z "$entry" ]; then
@@ -306,7 +332,7 @@ handle_preview() {
 handle_show_password() {
     local entry="$1"
     DATABASE="$KPDB"
-    PASSWORD="$KPPW"
+    PASSWORD=$(read_password_file)
     KEYFILE="${KPKF:-}"
 
     local pass
@@ -344,15 +370,15 @@ parse_args() {
     # Second: fall back to environment variables only if CLI didn't set them
     DATABASE="${cli_database:-${KPDB:-}}"
 
-    # Only inherit KPKF/KPPW from environment if the database also comes from the environment
-    # (i.e., the user didn't specify a different database on the CLI)
+    # Only inherit KPKF from environment if the database also comes from the environment
+    # (i.e., the user didn't specify a different database on the CLI).
+    # The password is never read from the environment; it is always prompted interactively.
     if [ -n "$cli_database" ]; then
         KEYFILE="${cli_keyfile:-}"
-        PASSWORD=""
     else
         KEYFILE="${cli_keyfile:-${KPKF:-}}"
-        PASSWORD="${KPPW:-}"
     fi
+    PASSWORD=""
 }
 
 # Main function
@@ -381,10 +407,12 @@ main() {
         exit 1
     fi
 
-    # Get password (if not already set via env var)
-    if [ -z "$PASSWORD" ]; then
-        PASSWORD=$(get_password "Database password")
-    fi
+    # Get password interactively
+    PASSWORD=$(get_password "Database password")
+
+    # Store the password in a secure temporary file for fzf subprocesses
+    setup_password_file
+    write_password_file
 
     # Test database access
     print_info "Verifying database access..."

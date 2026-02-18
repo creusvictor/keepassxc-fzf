@@ -88,16 +88,17 @@ Options:
 
 Environment variables:
     KPDB    Path to KeePass database
-    KPPW    Database password (not recommended)
     KPKF    Path to keyfile
 
 Precedence (highest to lowest):
     1. CLI arguments (-k, database path)
-    2. Environment variables (KPDB, KPPW, KPKF)
+    2. Environment variables (KPDB, KPKF)
 
-Note: KPPW and KPKF are only inherited from the environment when the
-database also comes from KPDB. If you pass a database path on the CLI,
-those env vars are ignored to avoid using credentials from a different database.
+Note: KPKF is only inherited from the environment when the database also
+comes from KPDB. If you pass a database path on the CLI, env credentials
+are ignored to avoid mixing credentials from different databases.
+The master password is always entered interactively and is never read
+from the environment.
 ```
 
 ### Examples
@@ -132,10 +133,10 @@ Standard fzf navigation also works (`Ctrl+J`/`Ctrl+K`, arrows, type to search).
 ## Security
 
 - Clipboard auto-clears after timeout
-- Password input is hidden
+- Password input is always interactive — never read from environment variables
 - Preview masks passwords with `*****`
-- No temporary files with sensitive data
-- **Warning**: `KPPW` environment variable is not recommended in shared environments
+- Master password is passed to fzf subprocesses via a `chmod 600` temporary file, not via environment variables, so it is not visible in `/proc/<pid>/environ`
+- Temporary password file is deleted on exit via a `trap`
 
 ## Troubleshooting
 
