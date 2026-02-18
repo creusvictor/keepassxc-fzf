@@ -320,18 +320,10 @@ handle_show_password() {
 
 # Parse arguments
 parse_args() {
-    # First, load from environment variables if set
-    if [ -n "${KPDB:-}" ]; then
-        DATABASE="$KPDB"
-    fi
-    if [ -n "${KPPW:-}" ]; then
-        PASSWORD="$KPPW"
-    fi
-    if [ -n "${KPKF:-}" ]; then
-        KEYFILE="$KPKF"
-    fi
+    local cli_database=""
+    local cli_keyfile=""
 
-    # Then, parse command line arguments (override env vars)
+    # First: parse CLI arguments (highest priority)
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)
@@ -339,15 +331,28 @@ parse_args() {
                 exit 0
                 ;;
             -k|--keyfile)
-                KEYFILE="$2"
+                cli_keyfile="$2"
                 shift 2
                 ;;
             *)
-                DATABASE="$1"
+                cli_database="$1"
                 shift
                 ;;
         esac
     done
+
+    # Second: fall back to environment variables only if CLI didn't set them
+    DATABASE="${cli_database:-${KPDB:-}}"
+
+    # Only inherit KPKF/KPPW from environment if the database also comes from the environment
+    # (i.e., the user didn't specify a different database on the CLI)
+    if [ -n "$cli_database" ]; then
+        KEYFILE="${cli_keyfile:-}"
+        PASSWORD=""
+    else
+        KEYFILE="${cli_keyfile:-${KPKF:-}}"
+        PASSWORD="${KPPW:-}"
+    fi
 }
 
 # Main function
